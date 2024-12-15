@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, HttpUrl
-from modules import pagespeed, content_analysis, technical_seo, recommendations
-from logger import logger
+from app.modules import pagespeed, content_analysis, technical_seo, recommendations
+from app.logger import logger
 
 app = FastAPI()
 

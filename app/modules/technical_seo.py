@@ -1,6 +1,6 @@
 import requests
 from urllib.parse import urlparse
-from logger import logger
+from ..logger import logger
 
 def analyze(url):
     logger.info(f"Analyzing technical SEO for {url}")

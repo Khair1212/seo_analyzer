@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from logger import logger
+from ..logger import logger
 
 def analyze(url):
     logger.info(f"Analyzing content for {url}")

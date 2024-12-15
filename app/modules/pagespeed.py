@@ -1,7 +1,7 @@
 import requests
 from fastapi import HTTPException
-from config import PAGESPEED_API_KEY
-from logger import logger
+from ..config import PAGESPEED_API_KEY
+from ..logger import logger
 
 def get_insights(url):
     logger.info(f"Fetching PageSpeed Insights for {url}")
