@@ -1,11 +1,12 @@
 import tiktoken
 from openai import OpenAI
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from ..config import OPENAI_API_KEY
 from ..logger import logger
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Keep your existing utility functions
 def count_tokens(text: str) -> int:
     try:
         encoding = tiktoken.encoding_for_model("gpt-4")
@@ -23,200 +24,277 @@ def truncate_text(text: str, max_tokens: int = 1000) -> str:
         return encoding.decode(tokens[:max_tokens]) + "..."
     return text
 
-def extract_performance_data(audit_data: dict) -> List[Dict[str, Any]]:
-    """Extract and structure performance data for analysis"""
-    performance_chunks = []
+# Add new class for enhanced issue tracking
+class PerformanceIssue:
+    def __init__(self, 
+                 issue_type: str,
+                 title: str,
+                 score: float,
+                 description: str,
+                 impact: Dict[str, Any],
+                 location: Optional[Dict[str, Any]] = None,
+                 resources: List[Dict[str, Any]] = None):
+        self.issue_type = issue_type
+        self.title = title
+        self.score = score
+        self.description = description
+        self.impact = impact
+        self.location = location or {}
+        self.resources = resources or []
+        
+    def get_severity(self) -> str:
+        if self.score < 0.5:
+            return 'critical'
+        elif self.score < 0.9:
+            return 'warning'
+        return 'info'
+        
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'type': self.issue_type,
+            'title': self.title,
+            'severity': self.get_severity(),
+            'score': self.score,
+            'description': self.description,
+            'location': self.location,
+            'impact': self.impact,
+            'resources': self.resources
+        }
+
+# Keep and enhance your location extraction function
+def extract_resource_location(item: dict) -> dict:
+    """Extract specific location information from a resource"""
+    location = {
+        'file': '',
+        'line': None,
+        'column': None,
+        'selector': '',
+        'context': '',
+        'url': item.get('url', '')  # Add URL to location info
+    }
+    
+    # Extract source location
+    if 'source' in item:
+        location.update({
+            'file': item['source'].get('file', ''),
+            'line': item['source'].get('line', None),
+            'column': item['source'].get('column', None)
+        })
+    
+    # Extract DOM location for elements
+    if 'node' in item:
+        node = item['node']
+        location.update({
+            'selector': node.get('selector', ''),
+            'context': node.get('snippet', ''),
+            'nodeLabel': node.get('nodeLabel', ''),
+            'path': node.get('path', ''),
+            'boundingRect': node.get('boundingRect', {})
+        })
+        
+    return location
+
+# Keep your format functions with minor enhancements
+def format_location(location: dict) -> str:
+    """Format location information for display"""
+    parts = []
+    
+    if location['file']:
+        parts.append(f"File: {location['file']}")
+        if location['line']:
+            parts.append(f"Line: {location['line']}")
+        if location['column']:
+            parts.append(f"Column: {location['column']}")
+    
+    if location['selector']:
+        parts.append(f"DOM: {location['selector']}")
+        if location.get('nodeLabel'):
+            parts.append(f"Element: {location['nodeLabel']}")
+    
+    if location.get('url'):
+        parts.append(f"URL: {location['url']}")
+        
+    return ', '.join(parts) if parts else "Location not available"
+
+def format_size(bytes: int) -> str:
+    """Format byte sizes in human-readable format"""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if bytes < 1024:
+            return f"{bytes:.1f}{unit}"
+        bytes /= 1024
+    return f"{bytes:.1f}TB"
+
+# Enhance your extract_performance_data function
+def extract_performance_data(pagespeed_data: dict) -> dict:
+    """Extract and categorize performance data with enhanced issue tracking"""
+    results = {
+        'opportunities': [],
+        'diagnostics': [],
+        'metrics': []
+    }
+    
     try:
-        # Group audits by category
-        audit_groups = {
-            'loading': [],
-            'rendering': [],
-            'assets': [],
-            'other': []
+        # Define audit categories with patterns
+        categories = {
+            'loading': ['largest-contentful-paint', 'first-contentful-paint', 'speed-index'],
+            'interactivity': ['interactive', 'blocking-time', 'cpu-time'],
+            'visual_stability': ['cumulative-layout-shift', 'layout-shift-elements'],
+            'resources': ['render-blocking-resources', 'unused-javascript', 'unused-css'],
+            'images': ['modern-image-formats', 'sized-images', 'responsive-images'],
+            'caching': ['uses-long-cache-ttl', 'efficient-cache-policy']
         }
         
-        for audit_id, audit in audit_data.items():
+        for audit_id, audit in pagespeed_data.items():
             if not isinstance(audit, dict) or audit.get('score') is None:
                 continue
                 
             score = float(audit.get('score', 1))
             if score >= 0.9:  # Skip high-scoring audits
                 continue
-                
-            audit_info = {
-                'id': audit_id,
-                'title': audit.get('title', ''),
-                'score': score,
-                'description': audit.get('description', ''),
-                'impact': audit.get('displayValue', ''),
-                'resources': []
-            }
             
-            # Extract resource details
+            # Create enhanced issue object
+            issue = PerformanceIssue(
+                issue_type=determine_category(audit_id, categories),
+                title=audit.get('title', ''),
+                score=score,
+                description=audit.get('description', ''),
+                impact={
+                    'displayValue': audit.get('displayValue', ''),
+                    'numericValue': audit.get('numericValue'),
+                    'numericUnit': audit.get('numericUnit', '')
+                }
+            )
+            
+            # Extract resource details with enhanced location tracking
             if 'details' in audit and 'items' in audit['details']:
-                for item in audit['details']['items'][:5]:  # Top 5 items
+                for item in audit['details']['items'][:5]:  # Limit to top 5 items
                     resource = {
                         'url': item.get('url', ''),
                         'type': item.get('resourceType', ''),
                         'size': item.get('totalBytes', 0),
                         'wasted': item.get('wastedBytes', 0),
-                        'time': item.get('wastedMs', 0)
+                        'time': item.get('wastedMs', 0),
+                        'location': extract_resource_location(item)
                     }
-                    audit_info['resources'].append(resource)
+                    issue.resources.append(resource)
             
-            # Categorize audit
-            if any(term in audit_id.lower() for term in ['load', 'time', 'fcp', 'lcp']):
-                audit_groups['loading'].append(audit_info)
-            elif any(term in audit_id.lower() for term in ['render', 'paint', 'cls']):
-                audit_groups['rendering'].append(audit_info)
-            elif any(term in audit_id.lower() for term in ['resource', 'asset', 'image', 'script', 'css']):
-                audit_groups['assets'].append(audit_info)
+            # Add to appropriate category
+            if audit.get('details', {}).get('type') == 'opportunity':
+                results['opportunities'].append(issue)
             else:
-                audit_groups['other'].append(audit_info)
-        
-        # Create chunks for each group
-        for group_name, audits in audit_groups.items():
-            if audits:
-                performance_chunks.append({
-                    'type': group_name,
-                    'audits': sorted(audits, key=lambda x: x['score'])
-                })
+                results['diagnostics'].append(issue)
                 
     except Exception as e:
         logger.error(f"Error extracting performance data: {e}")
-    
-    return performance_chunks
-
-def format_performance_chunks(chunks: List[dict]) -> str:
-    """Format all performance recommendations with proper structure"""
-    formatted_sections = []
-    
-    for chunk in chunks:
-        recommendations = get_performance_recommendations(chunk)
-        if recommendations:
-            section = f"""=== {chunk['type'].upper()} PERFORMANCE ===
-
-{recommendations}
-"""
-            formatted_sections.append(section)
-    
-    return "\n\n".join(formatted_sections)
-
-# def get_performance_recommendations(chunk: dict) -> str:
-#     """Get GPT-4 recommendations for a performance chunk"""
-#     try:
-#         # Prepare audit data for the prompt but in a way that encourages natural response
-#         issues_data = []
-#         for audit in chunk['audits']:
-#             resources = [
-#                 f"{res['url']} ({res['size']:,} bytes)"
-#                 for res in audit['resources']
-#                 if res['url']
-#             ]
-            
-#             issues_data.append({
-#                 'title': audit['title'],
-#                 'score': audit['score'],
-#                 'resources': resources
-#             })
-
-#         priority_level = '🔴 High Priority' if any(issue['score'] < 0.5 for issue in issues_data) else '🟡 Medium Priority'
-
-#         prompt = f"""As an SEO and performance expert, I've analyzed the {chunk['type']} aspects of the website.
-
-# For each issue, provide:
-# 1. A clear explanation of what's causing performance problems
-# 2. Specific technical solutions
-# 3. Expected impact after implementation
-
-# Format your response with:
-# - Priority markers (🔴 for critical, 🟡 for important)
-# - Clear problem statements
-# - Step-by-step solutions
-# - Code examples where relevant
-# - Expected improvements
-
-# Focus on being specific and actionable while maintaining a natural, consultative tone."""
-
-#         response = client.chat.completions.create(
-#             model="gpt-4",
-#             messages=[
-#                 {
-#                     "role": "system",
-#                     "content": """You are an expert web performance consultant providing recommendations. 
-#                     Be conversational yet professional. Don't mention PageSpeed Insights or scores directly. 
-#                     Instead, speak as if you've personally analyzed the website and found these issues. 
-#                     Each recommendation should start with either 🔴 (for critical issues) or 🟡 (for important but less critical issues)."""
-#                 },
-#                 {
-#                     "role": "assistant",
-#                     "content": f"I've analyzed the {chunk['type']} performance of the website. Let me share my findings and recommendations."
-#                 },
-#                 {
-#                     "role": "user",
-#                     "content": prompt
-#                 }
-#             ],
-#             max_tokens=1500,
-#             temperature=0.7
-#         )
-
-#         recommendations = response.choices[0].message.content
-
-#         # Add section header with priority level
-#         formatted_response = f"{priority_level}\n\n{recommendations}"
         
-#         return formatted_response
-#     except Exception as e:
-#         logger.error(f"Error getting performance recommendations: {e}")
-#         return f"Error analyzing {chunk['type']} performance issues"
-    
-def get_performance_recommendations(chunk: dict) -> str:
-    """Get GPT-4 recommendations for a performance chunk"""
+    return results
+
+def determine_category(audit_id: str, categories: Dict[str, List[str]]) -> str:
+    """Determine the category of a performance issue"""
+    audit_id_lower = audit_id.lower()
+    for category, patterns in categories.items():
+        if any(pattern in audit_id_lower for pattern in patterns):
+            return category
+    return 'other'
+
+# Enhance your get_performance_recommendations function
+def get_performance_recommendations(issue: PerformanceIssue) -> str:
+    """Generate detailed recommendations for a performance issue"""
     try:
-        # Determine priorities based on scores
-        critical_scores = sum(1 for audit in chunk['audits'] if audit['score'] < 0.5)
-        medium_scores = sum(1 for audit in chunk['audits'] if 0.5 <= audit['score'] < 0.9)
+        # Prepare detailed resource analysis
+        resource_analysis = []
+        for resource in issue.resources:
+            location = format_location(resource['location'])
+            
+            # Extract DOM details if available
+            dom_details = ""
+            if resource['location'].get('selector'):
+                dom_details = f"""
+DOM Location:
+- Selector: {resource['location']['selector']}
+- Element: {resource['location'].get('nodeLabel', 'Not specified')}
+- HTML Context: {resource['location'].get('context', 'Not available')}"""
+
+            # Extract file details if available
+            file_details = ""
+            if resource['location'].get('file'):
+                file_details = f"""
+File Location:
+- Path: {resource['location']['file']}
+- Line: {resource['location'].get('line', 'Not specified')}
+- Column: {resource['location'].get('column', 'Not specified')}"""
+
+            # Format resource analysis with detailed breakdown
+            analysis = f"""
+Resource Details:
+URL: {resource['url']}
+Type: {resource.get('type', 'Not specified')}
+Current Size: {format_size(resource['size'])}
+Potential Savings: {format_size(resource['wasted'])}
+Time Impact: {resource['time']}ms
+{dom_details}
+{file_details}
+Current Implementation Issues:
+- Size: {format_size(resource['size'])} (Can be optimized to save {format_size(resource['wasted'])})
+- Loading Time: {resource['time']}ms impact on page load"""
+            resource_analysis.append(analysis)
         
-        prompt = f"""As a web performance expert analyzing the {chunk['type']} aspects of the website.
+        prompt = f"""Analyze this {issue.issue_type} performance issue and provide specific solutions. Always start with the specific problematic resources and their locations:
 
-For each problem you identify, mark it as:
-🔴 for critical issues (severe performance impact)
-🟡 for important issues (moderate performance impact)
+ISSUE: {issue.title}
+Severity: {issue.get_severity().upper()}
+Score: {issue.score}
+Impact: {issue.impact['displayValue']}
 
-Structure each problem with:
-- Problem description
-- Detailed solution
-- Expected impact
+AFFECTED RESOURCES AND LOCATIONS:
+{chr(10).join(resource_analysis) if resource_analysis else 'No specific resources identified'}
 
-Focus on being specific and actionable. Write in a natural, consultative tone.
-Aim to identify {critical_scores} critical issues and {medium_scores} important issues."""
+Description:
+{issue.description}
+
+Provide:
+1. SPECIFIC PROBLEMS BY RESOURCE
+- List each problematic resource
+- Current implementation issues for each
+- Technical impact of each issue
+
+2. DETAILED SOLUTION FOR EACH RESOURCE
+- Specific changes needed for each file/resource
+- Exact code or configuration changes with examples
+- Step-by-step implementation guide per resource
+- Required tools and commands with examples
+
+3. VERIFICATION STEPS
+- How to verify the fix
+- Expected improvements
+- Tools to measure impact"""
 
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
                 {
                     "role": "system",
-                    "content": """You are an expert web performance consultant. 
-                    Mark critical problems with 🔴 and important problems with 🟡.
-                    Write in a natural, consultative tone.
-                    Focus on specific, actionable recommendations.
-                    Each problem should clearly show its priority level."""
+                    "content": """You are an expert web performance consultant.
+                    Provide detailed, actionable solutions with:
+                    1. Specific file locations and code examples
+                    2. Step-by-step implementation guides
+                    3. Expected improvements with metrics"""
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            max_tokens=1500,
+            max_tokens=2000,
             temperature=0.7
         )
 
         return response.choices[0].message.content
         
     except Exception as e:
-        logger.error(f"Error getting performance recommendations: {e}") 
-        return f"Error analyzing {chunk['type']} performance issues"
+        logger.error(f"Error getting recommendations: {e}")
+        return f"Error analyzing {issue.issue_type} performance issue"
+    
 
 def analyze_content_issues(content_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Analyze content issues with specific locations and fixes"""
@@ -437,66 +515,73 @@ def format_recommendations(issues: Dict[str, Dict[str, Any]], issue_type: str) -
     
     return "\n\n".join(formatted)
 
+
+# Keep your generate function with enhanced integration
 def generate(url: str, pagespeed_insights: dict, content_data: dict, tech_seo_data: dict) -> dict:
     """Generate comprehensive recommendations"""
     try:
         logger.info(f"Generating recommendations for {url}")
         
-        # Initialize with empty dictionaries if None
+        # Extract performance data with enhanced tracking
+        performance_data = extract_performance_data(pagespeed_insights.get('opportunities', {}))
+        
+        # Generate recommendations for each issue
+        performance_recommendations = []
+        for issue in performance_data['opportunities'] + performance_data['diagnostics']:
+            recommendation = get_performance_recommendations(issue)
+            if recommendation:
+                severity_marker = '🔴' if issue.get_severity() == 'critical' else '🟡'
+                performance_recommendations.append(
+                    f"{severity_marker} {issue.title}\n{recommendation}"
+                )
+        
+        # Keep your existing content and technical analysis
         content_issues = analyze_content_issues(content_data or {})
         technical_issues = analyze_technical_issues(tech_seo_data or {})
         
-        # Process performance data with GPT-4
-        performance_chunks = extract_performance_data(pagespeed_insights.get('opportunities', {}))
-        performance_recommendations = []
-        
-        for chunk in performance_chunks:
-            chunk_recommendation = get_performance_recommendations(chunk)
-            if chunk_recommendation:
-                performance_recommendations.append(f"== {chunk['type'].upper()} PERFORMANCE RECOMMENDATIONS ==\n\n{chunk_recommendation}")
-        
-        # Prepare recommendations
-        recommendations = {
-            'performance': "\n\n".join(performance_recommendations) if performance_recommendations else "No significant performance issues found.",
-            'content': format_recommendations(content_issues or {}, 'content'),
-            'technical': format_recommendations(technical_issues or {}, 'technical')
-        }
-        
-        # Calculate priority counts safely
-        high_count = 0
-        medium_count = 0
-        
-        # Count content issues
-        if content_issues:
-            high_count += sum(1 for issue in content_issues.values() 
-                            if issue.get('importance') == 'high')
-            medium_count += sum(1 for issue in content_issues.values() 
-                              if issue.get('importance') == 'medium')
-        
-        # Count technical issues
-        if technical_issues:
-            high_count += sum(1 for issue in technical_issues.values() 
-                            if issue.get('importance') == 'high')
-            medium_count += sum(1 for issue in technical_issues.values() 
-                              if issue.get('importance') == 'medium')
-        
-        # Count performance issues
-        if performance_chunks:
-            for chunk in performance_chunks:
-                for audit in chunk['audits']:
-                    if audit['score'] < 0.5:
-                        high_count += 1
-                    elif audit['score'] < 0.9:
-                        medium_count += 1
-        
+        # Prepare complete recommendations
         return {
-            'recommendations': recommendations,
-            'priority_counts': {
-                'high': high_count,
-                'medium': medium_count
-            }
+            'recommendations': {
+                'performance': "\n\n".join(performance_recommendations),
+                'content': format_recommendations(content_issues, 'content'),
+                'technical': format_recommendations(technical_issues, 'technical')
+            },
+            'priority_counts': calculate_priority_counts(
+                performance_data, content_issues, technical_issues
+            )
         }
         
     except Exception as e:
         logger.error(f"Error generating recommendations: {e}")
         raise
+
+def calculate_priority_counts(
+    performance_data: dict,
+    content_issues: Dict[str, Dict[str, Any]],
+    technical_issues: Dict[str, Dict[str, Any]]
+) -> Dict[str, int]:
+    """Calculate priority counts across all issue types"""
+    high_count = 0
+    medium_count = 0
+    
+    # Count performance issues
+    for issue in performance_data['opportunities'] + performance_data['diagnostics']:
+        if issue.score < 0.5:
+            high_count += 1
+        elif issue.score < 0.9:
+            medium_count += 1
+    
+    # Count content and technical issues
+    for issues in [content_issues, technical_issues]:
+        if issues:
+            high_count += sum(1 for issue in issues.values() 
+                            if issue.get('importance') == 'high')
+            medium_count += sum(1 for issue in issues.values() 
+                              if issue.get('importance') == 'medium')
+    
+    return {
+        'high': high_count,
+        'medium': medium_count
+    }
+
+
